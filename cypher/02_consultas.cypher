@@ -1,10 +1,11 @@
 // =============================================================================
 //  Cinéfilo: todas as consultas do notebook, para executar no Memgraph Lab
-//  (http://localhost:3000). Cada consulta termina em ';'.
+//  (http://localhost:3000). Cada consulta termina em ';'. A ordem é a do
+//  notebook: T, I, V e S.
 //
-//  ATENÇÃO: S11, S12 e S13 ALTERAM a base. No notebook elas rodam numa
-//  transação desfeita no fim; aqui, depois de executá-las, recarregue a base
-//  com `python src/carregar.py`.
+//  ATENÇÃO: S11, S12 e S13 ALTERAM a base e por isso ficam no fim do arquivo.
+//  No notebook elas rodam numa transação desfeita no fim; aqui, depois de
+//  executá-las, recarregue a base com `python src/carregar.py`.
 // =============================================================================
 
 // [T1] Elenco de Interestelar  (nó fixo, relacionamento fixo, destino livre)
@@ -28,7 +29,7 @@ LIMIT 5;
 MATCH (p:Pessoa {id: 'eastwood'})
 OPTIONAL MATCH (p)-[r]->(x)
 RETURN labels(p) AS rotulos, properties(p) AS propriedades,
-       collect(type(r) + ' -> ' + x.nome) AS relacionamentos_de_saida;
+       collect(type(r) + ' -> ' + coalesce(x.nome, x.titulo)) AS relacionamentos_de_saida;
 
 // [T5] Onde Clint Eastwood aparece como destino  (destino fixo, o resto livre)
 MATCH (x)-[r]->(:Pessoa {id: 'eastwood'})
@@ -43,6 +44,62 @@ RETURN type(r) AS relacionamento;
 MATCH (f:Filme)-[:DO_GENERO]->(:Genero {id: 'Ficcao'})
 RETURN count(f) AS filmes;
 
+// ----- O que era inferência vira consulta (direto x com a regra) -----
+
+// [I1] rdfs:subClassOf  ->  caminho SUBGENERO_DE*: que filmes são de Ficção?  (direto)
+MATCH (f:Filme)-[:DO_GENERO]->(:Genero {id: 'Ficcao'})
+RETURN f.titulo AS nome;
+// [I1] com a regra
+MATCH (f:Filme)-[:DO_GENERO]->(:Genero)-[:SUBGENERO_DE*]->(:Genero {id: 'Ficcao'})
+RETURN DISTINCT f.titulo AS nome;
+
+// [I2] rdfs:domain / rdfs:range  ->  papel pelo relacionamento: quais são os papéis de Christopher Nolan?  (direto)
+MATCH (p:Pessoa {id: 'nolan'})
+UNWIND labels(p) AS nome
+RETURN nome;
+// [I2] com a regra
+MATCH (p:Pessoa {id: 'nolan'})
+UNWIND labels(p) AS nome
+RETURN nome
+UNION
+MATCH (:Pessoa {id: 'nolan'})<-[r]-(:Filme)
+RETURN CASE type(r)
+         WHEN 'DIRIGIDO_POR' THEN 'Diretor'
+         WHEN 'TEM_NO_ELENCO' THEN 'Ator'
+         WHEN 'ROTEIRIZADO_POR' THEN 'Roteirista'
+         WHEN 'TRILHA_SONORA_DE' THEN 'Compositor'
+       END AS nome;
+
+// [I3] owl:inverseOf  ->  a mesma aresta, percorrida ao contrário: o que Christopher Nolan dirigiu?  (direto)
+MATCH (f:Filme)-[:DIRIGIDO_POR]->(:Pessoa {id: 'nolan'})
+RETURN f.titulo AS nome;
+// [I3] com a regra
+MATCH (:Pessoa {id: 'nolan'})<-[:DIRIGIDO_POR]-(f:Filme)
+RETURN f.titulo AS nome;
+
+// [I4] owl:TransitiveProperty  ->  caminho INFLUENCIOU*: quem Stanley Kubrick influenciou?  (direto)
+MATCH (:Pessoa {id: 'kubrick'})-[:INFLUENCIOU]->(x:Pessoa)
+RETURN x.nome AS nome;
+// [I4] com a regra
+MATCH (:Pessoa {id: 'kubrick'})-[:INFLUENCIOU*]->(x:Pessoa)
+RETURN DISTINCT x.nome AS nome;
+
+// [I5] owl:SymmetricProperty  ->  relacionamento sem direção: com quem Hans Zimmer colaborou?  (direto)
+MATCH (:Pessoa {id: 'zimmer'})-[:COLABOROU_COM]->(x:Pessoa)
+RETURN x.nome AS nome;
+// [I5] com a regra
+MATCH (:Pessoa {id: 'zimmer'})-[:COLABOROU_COM]-(x:Pessoa)
+RETURN x.nome AS nome;
+
+// [I6] rdfs:subPropertyOf + transitiva  ->  caminho SEQUENCIA_DE*: Toy Story 3 vem depois de quais filmes?  (direto)
+MATCH (:Filme {id: 'toyStory3'})-[:SEQUENCIA_DE]->(x:Filme)
+RETURN x.titulo AS nome;
+// [I6] com a regra
+MATCH (:Filme {id: 'toyStory3'})-[:SEQUENCIA_DE*]->(x:Filme)
+RETURN DISTINCT x.titulo AS nome;
+
+// ----- Verificações de consistência -----
+
 // [V1] Verificação de owl:disjointWith: filmes em dois gêneros disjuntos
 MATCH (f:Filme)-[:DO_GENERO]->(g:Genero)
 OPTIONAL MATCH (g)-[:SUBGENERO_DE*]->(acima:Genero)
@@ -51,10 +108,13 @@ MATCH (a:Genero)-[:DISJUNTO_DE]->(b:Genero)
 WHERE a IN categorias AND b IN categorias
 RETURN f.titulo AS filme, a.nome AS categoria_1, b.nome AS categoria_2;
 
-// [V2] Verificação de owl:AsymmetricProperty: sequências em ciclo
-MATCH (a:Filme)-[:SEQUENCIA_DE]->(b:Filme)-[:SEQUENCIA_DE]->(a)
-WHERE a.id < b.id
-RETURN a.titulo AS filme_1, b.titulo AS filme_2;
+// [V2] Verificação de owl:AsymmetricProperty: sequências em ciclo, de qualquer tamanho
+//      (laço de um filme nele mesmo, par A -> B -> A, ou cadeias maiores).
+//      O WHERE faz cada ciclo começar pelo menor id, para aparecer uma vez só.
+MATCH p = (a:Filme)-[:SEQUENCIA_DE*]->(a)
+WHERE all(n IN nodes(p) WHERE a.id <= n.id)
+RETURN reduce(s = a.titulo, n IN tail(nodes(p)) | s + ' -> ' + n.titulo) AS ciclo,
+       size(relationships(p)) AS filmes_no_ciclo;
 
 // [S1] Ficção lançada a partir de 2010 com nota ≥ 8.3  (WHERE; travessia)
 MATCH (f:Filme)-[:DO_GENERO]->(:Genero)-[:SUBGENERO_DE*]->(:Genero {id: 'Ficcao'})
@@ -79,6 +139,8 @@ RETURN d.nome AS diretor, filmes, media, primeiro, ultimo
 ORDER BY media DESC, filmes DESC, diretor;
 
 // [S4] Filmes e nota média por gênero de ficção  (agregação; travessia)
+//      Um salto de SUBGENERO_DE, sem '*': agrupa pelos subgêneros DIRETOS de Ficção,
+//      que hoje são todos os gêneros de ficção, porque a taxonomia tem um só nível.
 MATCH (f:Filme)-[:DO_GENERO]->(g:Genero)-[:SUBGENERO_DE]->(:Genero {id: 'Ficcao'})
 RETURN g.nome AS genero, count(f) AS filmes, round(avg(f.nota) * 100) / 100.0 AS media
 ORDER BY filmes DESC, media DESC;
@@ -166,57 +228,3 @@ SET f.nota = 7.4;
 // [S13] DETACH DELETE: modo família, remover filmes de terror  (equivalente ao DELETE)
 MATCH (f:Filme)-[:DO_GENERO]->(:Genero {id: 'Terror'})
 DETACH DELETE f;
-
-// ----- Seção 4: o que era inferência vira consulta (direto x com a regra) -----
-
-// [I1] rdfs:subClassOf  ->  caminho SUBGENERO_DE*: que filmes são de Ficção?  (direto)
-MATCH (f:Filme)-[:DO_GENERO]->(:Genero {id: 'Ficcao'})
-RETURN f.titulo AS nome;
-// [I1] com a regra
-MATCH (f:Filme)-[:DO_GENERO]->(:Genero)-[:SUBGENERO_DE*]->(:Genero {id: 'Ficcao'})
-RETURN DISTINCT f.titulo AS nome;
-
-// [I2] rdfs:domain / rdfs:range  ->  papel pelo relacionamento: quais são os papéis de Christopher Nolan?  (direto)
-MATCH (p:Pessoa {id: 'nolan'})
-UNWIND labels(p) AS nome
-RETURN nome;
-// [I2] com a regra
-MATCH (p:Pessoa {id: 'nolan'})
-UNWIND labels(p) AS nome
-RETURN nome
-UNION
-MATCH (:Pessoa {id: 'nolan'})<-[r]-(:Filme)
-RETURN CASE type(r)
-         WHEN 'DIRIGIDO_POR' THEN 'Diretor'
-         WHEN 'TEM_NO_ELENCO' THEN 'Ator'
-         WHEN 'ROTEIRIZADO_POR' THEN 'Roteirista'
-         WHEN 'TRILHA_SONORA_DE' THEN 'Compositor'
-       END AS nome;
-
-// [I3] owl:inverseOf  ->  a mesma aresta, percorrida ao contrário: o que Christopher Nolan dirigiu?  (direto)
-MATCH (f:Filme)-[:DIRIGIDO_POR]->(:Pessoa {id: 'nolan'})
-RETURN f.titulo AS nome;
-// [I3] com a regra
-MATCH (:Pessoa {id: 'nolan'})<-[:DIRIGIDO_POR]-(f:Filme)
-RETURN f.titulo AS nome;
-
-// [I4] owl:TransitiveProperty  ->  caminho INFLUENCIOU*: quem Stanley Kubrick influenciou?  (direto)
-MATCH (:Pessoa {id: 'kubrick'})-[:INFLUENCIOU]->(x:Pessoa)
-RETURN x.nome AS nome;
-// [I4] com a regra
-MATCH (:Pessoa {id: 'kubrick'})-[:INFLUENCIOU*]->(x:Pessoa)
-RETURN DISTINCT x.nome AS nome;
-
-// [I5] owl:SymmetricProperty  ->  relacionamento sem direção: com quem Hans Zimmer colaborou?  (direto)
-MATCH (:Pessoa {id: 'zimmer'})-[:COLABOROU_COM]->(x:Pessoa)
-RETURN x.nome AS nome;
-// [I5] com a regra
-MATCH (:Pessoa {id: 'zimmer'})-[:COLABOROU_COM]-(x:Pessoa)
-RETURN x.nome AS nome;
-
-// [I6] rdfs:subPropertyOf + transitiva  ->  caminho SEQUENCIA_DE*: Toy Story 3 vem depois de quais filmes?  (direto)
-MATCH (:Filme {id: 'toyStory3'})-[:SEQUENCIA_DE]->(x:Filme)
-RETURN x.titulo AS nome;
-// [I6] com a regra
-MATCH (:Filme {id: 'toyStory3'})-[:SEQUENCIA_DE*]->(x:Filme)
-RETURN DISTINCT x.titulo AS nome;
