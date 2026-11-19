@@ -39,7 +39,7 @@ No MP3, a base era um conjunto de triplas RDF com um esquema em RDFS e OWL. Aqui
 | **Relacionamentos** | **149**, de 12 tipos |
 
 As 68 instâncias do MP3 (filmes, pessoas, estúdios e prêmios) estão todas no grafo, com os mesmos
-valores. O `src/carregar.py` confere essas contagens a cada carga.
+valores. O `src/carregar.py` confere essas contagens e as restrições de unicidade a cada carga.
 
 ### Principais decisões
 
@@ -50,7 +50,9 @@ valores. O `src/carregar.py` confere essas contagens a cada carga.
   `Diretor ⊂ Profissional ⊂ Pessoa`; um filme é `:Obra:Filme`; um estúdio é `:Organizacao:Estudio`.
   Cada pessoa tem o rótulo do papel declarado no MP3.
 - **O `id` faz o papel da URI.** `cine:interestelar` vira `{id: 'interestelar'}`, e uma restrição de
-  unicidade impede ids repetidos.
+  unicidade (em `Filme`, `Pessoa`, `Estudio`, `Premio` e `Genero`) impede ids repetidos. O Memgraph só
+  aceita criar restrições fora de transações explícitas, por isso o `carregar.py` as cria em
+  transação implícita (`session.run`) e não pelo `execute_query`.
 - **Propriedade na aresta.** O ano em que cada prêmio foi entregue fica no relacionamento:
   `-[:GANHOU {ano: 2015}]->`. Em RDF isso exigiria reificação; no grafo de propriedades é nativo.
 
@@ -70,14 +72,16 @@ consulta**, percorrendo o grafo:
 | `rdfs:subPropertyOf` + transitiva | caminho `[:SEQUENCIA_DE*]` ("posterior na franquia") |
 | `owl:FunctionalProperty` | garantida pelo modelo: uma propriedade de nó guarda um único valor |
 | `owl:disjointWith` | relacionamento `DISJUNTO_DE` e consulta de verificação (V1) |
-| `owl:AsymmetricProperty` | consulta de verificação de ciclos (V2) |
+| `owl:AsymmetricProperty` | consulta de verificação de ciclos de qualquer tamanho, com `[:SEQUENCIA_DE*]` (V2) |
 | `owl:equivalentClass` (schema.org) | exportação do catálogo em JSON-LD do schema.org (S10) |
 
 ## Consultas
 
 O notebook executa **todas as consultas do MP3 reescritas em Cypher** e imprime cada resultado com o
-número e o propósito. O arquivo [`cypher/02_consultas.cypher`](cypher/02_consultas.cypher) tem as
-mesmas consultas, prontas para colar no Memgraph Lab.
+número e o propósito. O notebook está salvo **já executado**: os resultados aparecem no GitHub sem
+precisar subir o Memgraph. O arquivo [`cypher/02_consultas.cypher`](cypher/02_consultas.cypher) tem as
+mesmas consultas, na mesma ordem, prontas para colar no Memgraph Lab; as que alteram a base (S11 a
+S13) ficam no fim.
 
 | Seção | Consultas | Conteúdo |
 |---|---|---|
@@ -126,6 +130,9 @@ docker compose up -d
 docker compose ps        # os containers memgraph e memgraph-lab devem estar em execução
 ```
 
+As imagens têm versão fixa (`memgraph/memgraph:3.14.0` e `memgraph/lab:3.14.2`), para o projeto rodar
+igual no futuro.
+
 - Memgraph: `bolt://localhost:7687` (é por aqui que o Python conecta)
 - Memgraph Lab: [http://localhost:3000](http://localhost:3000) (interface para consultar e ver o grafo)
 
@@ -145,8 +152,8 @@ pip install -r requirements.txt
 python src/carregar.py
 ```
 
-O script apaga o banco, executa `cypher/01_carga.cypher` e confere cada rótulo e cada tipo de
-relacionamento. A saída deve terminar com `Base completa.`
+O script apaga o banco, executa `cypher/01_carga.cypher` e confere cada rótulo, cada tipo de
+relacionamento e as 5 restrições de unicidade. A saída deve terminar com `Base completa.`
 
 ### 4. Executar as consultas
 
@@ -156,7 +163,8 @@ jupyter notebook Cinefilo_Grafo.ipynb
 
 No Jupyter, use **Run → Run All Cells**. No VS Code, abra o notebook, escolha o kernel do `.venv` em
 **Select Kernel** e clique em **Run All**. O notebook precisa ser aberto a partir da pasta do
-repositório, porque importa o `src/carregar.py`. Se o banco estiver vazio, a seção 2 faz a carga.
+repositório, porque importa o `src/carregar.py`. Se o banco estiver vazio ou diferente do esperado,
+a seção 2 faz a carga.
 
 O Colab não serve aqui: ele não alcança o Memgraph rodando no seu computador.
 
