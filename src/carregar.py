@@ -31,6 +31,8 @@ RELACIONAMENTOS_ESPERADOS = {
     "TRILHA_SONORA_DE": 11, "PRODUZIDO_POR": 23, "GANHOU": 16,
     "SEQUENCIA_DE": 3, "INFLUENCIOU": 3, "COLABOROU_COM": 8,
 }
+# Rótulos com restrição de unicidade sobre a propriedade 'id'
+RESTRICOES_ESPERADAS = {"Filme", "Pessoa", "Estudio", "Premio", "Genero"}
 TOTAL_NOS = 75
 TOTAL_RELACIONAMENTOS = 149
 
@@ -42,8 +44,20 @@ def comandos(texto):
 
 
 def executar(driver, cypher):
+    """Roda uma consulta numa transação gerenciada pelo driver."""
     registros, _, _ = driver.execute_query(cypher, database_="memgraph")
     return registros
+
+
+def executar_implicita(driver, cypher):
+    """Roda uma consulta numa transação implícita (auto-commit).
+
+    O Memgraph só aceita criar restrições e índices, e consultar o esquema, fora de
+    transações explícitas. O execute_query do driver sempre abre uma transação
+    explícita, por isso esses comandos passam por session.run.
+    """
+    with driver.session(database="memgraph") as sessao:
+        return list(sessao.run(cypher))
 
 
 def carregar(driver, verbose=True):
@@ -51,13 +65,10 @@ def carregar(driver, verbose=True):
     executar(driver, "MATCH (n) DETACH DELETE n")
     for comando in comandos(ARQUIVO_CARGA.read_text(encoding="utf-8")):
         if comando.startswith("CREATE CONSTRAINT"):
-            try:
-                executar(driver, comando)
-            except Exception as erro:  # a restrição já existe de uma carga anterior
-                if verbose:
-                    print(f"Restrição mantida ({type(erro).__name__}): {comando}")
-            continue
-        executar(driver, comando)
+            # Recriar uma restrição que já existe não é erro no Memgraph.
+            executar_implicita(driver, comando)
+        else:
+            executar(driver, comando)
     return conferir(driver, verbose)
 
 
@@ -71,9 +82,16 @@ def contagens(driver):
     return nos, rels, total_nos, total_rels
 
 
+def restricoes(driver):
+    """Rótulos que têm restrição de unicidade sobre 'id'."""
+    return {r["label"] for r in executar_implicita(driver, "SHOW CONSTRAINT INFO")
+            if r["constraint type"] == "unique" and list(r["properties"]) == ["id"]}
+
+
 def conferir(driver, verbose=True):
     """Compara o grafo no banco com o conteúdo esperado. Devolve True se bater."""
     nos, rels, total_nos, total_rels = contagens(driver)
+    unicos = restricoes(driver)
     ok = True
     linhas = []
     for nome, esperado in list(NOS_ESPERADOS.items()) + list(RELACIONAMENTOS_ESPERADOS.items()):
@@ -82,11 +100,16 @@ def conferir(driver, verbose=True):
         tipo = "rótulo" if nome in NOS_ESPERADOS else "relacionamento"
         linhas.append(f"  {tipo:<15}{nome:<18}{obtido:>5}{esperado:>10}  {'ok' if obtido == esperado else 'DIFERENTE'}")
     ok &= total_nos == TOTAL_NOS and total_rels == TOTAL_RELACIONAMENTOS
+    ok &= unicos == RESTRICOES_ESPERADAS
     if verbose:
         print(f"  {'tipo':<15}{'nome':<18}{'no banco':>5}{'esperado':>10}")
         print("\n".join(linhas))
         print(f"\n  Total: {total_nos} nós (esperado {TOTAL_NOS}), "
               f"{total_rels} relacionamentos (esperado {TOTAL_RELACIONAMENTOS})")
+        faltando = sorted(RESTRICOES_ESPERADAS - unicos)
+        print(f"  Restrições de unicidade em 'id': {len(unicos & RESTRICOES_ESPERADAS)} "
+              f"(esperado {len(RESTRICOES_ESPERADAS)})"
+              + (f"; faltando em {', '.join(faltando)}" if faltando else ""))
         print("  Base completa." if ok else "  ATENÇÃO: a base difere do esperado.")
     return ok
 
