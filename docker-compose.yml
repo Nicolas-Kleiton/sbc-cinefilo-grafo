@@ -1,6 +1,8 @@
+# Versões fixas, para o projeto continuar reproduzível. A imagem memgraph/memgraph
+# basta: o projeto não usa os algoritmos do MAGE.
 services:
   memgraph:
-    image: memgraph/memgraph-mage:latest
+    image: memgraph/memgraph:3.14.0
     container_name: memgraph
     ports:
       - "7687:7687"
@@ -8,7 +10,7 @@ services:
     volumes:
       - mg_lib:/var/lib/memgraph
   lab:
-    image: memgraph/lab:latest
+    image: memgraph/lab:3.14.2
     container_name: memgraph-lab
     ports:
       - "3000:3000"
