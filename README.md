@@ -108,8 +108,8 @@ Correspondência das consultas SPARQL:
 | S12 | DELETE/INSERT | `SET` |
 | S13 | DELETE | `DETACH DELETE` |
 
-**Consultas com travessia** (dois ou mais relacionamentos encadeados): S1, S4, S7, S8, S9, I1, I4, I6
-e V1.
+**Consultas com travessia** (dois ou mais relacionamentos encadeados): S1, S4, S7, S8, S9, I1, I4, I6,
+V1 e V2.
 
 **Atualizações:** S11, S12 e S13 rodam dentro de uma transação. O notebook mostra o estado antes e
 depois de cada uma e, no fim, desfaz tudo com `rollback`. Assim o efeito aparece na saída e a base no
